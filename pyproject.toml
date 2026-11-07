@@ -1,0 +1,15 @@
+[project]
+name = "yog"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [{ name = "IgnacyBerent", email = "2gb02ignac@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+yog = "yog:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
