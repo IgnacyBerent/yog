@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
 from datetime import UTC, date, datetime, time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 from sqlalchemy import Engine, create_engine, select, text
@@ -17,6 +16,18 @@ from yog.db.models import (
     PutCallSummary,
     Series,
 )
+from yog.enums import (
+    NewsFrequency,
+    OutputFormat,
+    Provider,
+    PutCallLevel,
+    Timeframe,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+    from sqlalchemy.engine import Connection as SaConnection
 
 
 def _as_list(value: str | Sequence[str] | None) -> list[str] | None:
@@ -70,19 +81,18 @@ class Client:
     """Synchronous read client for the PostgreSQL dataset.
 
     All methods return a ``pandas.DataFrame`` by default. Pass
-    ``format="polars"`` to receive a Polars DataFrame instead.
+    ``format="polars"`` (or ``OutputFormat.POLARS``) to receive a Polars
+    DataFrame instead.
     """
 
     def __init__(
         self,
         database_url: str | None = None,
         *,
-        format: str = "pandas",
+        format: OutputFormat | str = OutputFormat.PANDAS,
         engine: Engine | None = None,
     ) -> None:
-        if format not in {"pandas", "polars"}:
-            raise ValueError("format must be 'pandas' or 'polars'")
-        self.format = format
+        self.format = OutputFormat(format)
         self.engine = engine or create_engine(
             database_url or get_settings().database_url,
             pool_pre_ping=True,
@@ -100,14 +110,14 @@ class Client:
 
     # ------------------------------------------------------------------ helpers
     def _finalize(self, frame: pd.DataFrame) -> Any:
-        if self.format == "polars":
+        if self.format is OutputFormat.POLARS:
             import polars as pl
 
             return pl.from_pandas(frame)
         return frame
 
     @staticmethod
-    def _read(stmt, conn) -> pd.DataFrame:
+    def _read(stmt: Any, conn: SaConnection) -> pd.DataFrame:
         return pd.read_sql(stmt, conn)
 
     # ------------------------------------------------------------------ catalogue
@@ -147,7 +157,7 @@ class Client:
         start: str | date | datetime | None = None,
         end: str | date | datetime | None = None,
         *,
-        provider: str | None = None,
+        provider: Provider | str | None = None,
         wide: bool = False,
     ) -> Any:
         """Return scalar observations for one or more series codes.
@@ -170,7 +180,7 @@ class Client:
             .order_by(Observation.obs_date, Series.code)
         )
         if provider is not None:
-            stmt = stmt.where(Series.provider == provider)
+            stmt = stmt.where(Series.provider == Provider(provider).value)
         start_date = _as_date(start)
         end_date = _as_date(end)
         if start_date is not None:
@@ -229,7 +239,7 @@ class Client:
         self,
         symbols: str | Sequence[str],
         *,
-        timeframe: str = "5m",
+        timeframe: Timeframe | str = Timeframe.M5,
         start: str | date | datetime,
         end: str | date | datetime,
         max_rows: int = 2_000_000,
@@ -239,8 +249,7 @@ class Client:
         A start and end are required to prevent accidentally loading millions of
         rows into memory.
         """
-        if timeframe not in {"1m", "5m"}:
-            raise ValueError("timeframe must be '1m' or '5m'")
+        interval = Timeframe(timeframe)
         wanted = _as_list(symbols)
         if not wanted:
             raise ValueError("at least one symbol is required")
@@ -260,7 +269,7 @@ class Client:
             .join(Bar, Bar.instrument_id == Instrument.id)
             .where(
                 Instrument.symbol.in_(wanted),
-                Bar.timeframe == timeframe,
+                Bar.timeframe == interval.value,
                 Bar.ts >= start_ts,
                 Bar.ts <= end_ts,
             )
@@ -279,12 +288,13 @@ class Client:
         self,
         symbols: str | Sequence[str],
         *,
-        timeframe: str = "5m",
+        timeframe: Timeframe | str = Timeframe.M5,
         start: str | date | datetime,
         end: str | date | datetime,
         batch_size: int = 100_000,
     ) -> Iterator[Any]:
         """Stream intraday bars in batches."""
+        interval = Timeframe(timeframe)
         wanted = _as_list(symbols)
         if not wanted:
             raise ValueError("at least one symbol is required")
@@ -304,7 +314,7 @@ class Client:
             .join(Bar, Bar.instrument_id == Instrument.id)
             .where(
                 Instrument.symbol.in_(wanted),
-                Bar.timeframe == timeframe,
+                Bar.timeframe == interval.value,
                 Bar.ts >= start_ts,
                 Bar.ts <= end_ts,
             )
@@ -325,14 +335,14 @@ class Client:
         start: str | date | datetime | None = None,
         end: str | date | datetime | None = None,
         *,
-        level: str = "summary",
+        level: PutCallLevel | str = PutCallLevel.SUMMARY,
     ) -> Any:
-        if level not in {"summary", "expiration"}:
-            raise ValueError("level must be 'summary' or 'expiration'")
+        granularity = PutCallLevel(level)
         wanted = _as_list(symbols)
         if not wanted:
             raise ValueError("at least one symbol is required")
-        if level == "summary":
+        stmt: Any
+        if granularity is PutCallLevel.SUMMARY:
             stmt = (
                 select(
                     Instrument.symbol,
@@ -452,19 +462,17 @@ class Client:
         *,
         start: str | date | datetime | None = None,
         end: str | date | datetime | None = None,
-        frequency: str = "1D",
+        frequency: NewsFrequency | str = NewsFrequency.DAILY,
         min_relevance: float = 0.0,
     ) -> Any:
         wanted = _as_list(tickers)
         if not wanted:
             raise ValueError("at least one ticker is required")
-        units = {"1D": "day", "1W": "week", "1M": "month"}
-        if frequency not in units:
-            raise ValueError("frequency must be one of 1D, 1W, 1M")
+        freq = NewsFrequency(frequency)
         conditions = ["ts.ticker = ANY(:tickers)"]
         params: dict[str, Any] = {
             "tickers": wanted,
-            "unit": units[frequency],
+            "unit": freq.sql_unit,
             "min_relevance": min_relevance,
         }
         if start is not None:
@@ -503,7 +511,7 @@ class Client:
         end: str | date | datetime,
         macro: Sequence[str] | None = None,
         news_tickers: Sequence[str] | None = None,
-        frequency: str = "1D",
+        frequency: NewsFrequency | str = NewsFrequency.DAILY,
     ) -> Any:
         """Build a daily feature panel from daily bars, macro series and news.
 
@@ -512,11 +520,12 @@ class Client:
         correct for data revisions: the snapshot stores observation dates, not
         real-time release vintages.
         """
-        if frequency != "1D":
+        freq = NewsFrequency(frequency)
+        if freq is not NewsFrequency.DAILY:
             raise ValueError("panel currently supports frequency='1D' only")
         symbols_list = _as_list(symbols) or []
         bars_df = self.daily_bars(symbols_list, start, end)
-        if self.format == "polars":
+        if self.format is OutputFormat.POLARS:
             bars_df = bars_df.to_pandas()
         if bars_df.empty:
             raise ValueError("no daily bars found for the requested symbols")
@@ -533,7 +542,7 @@ class Client:
 
         if macro:
             macro_df = self.series(macro, start, end, wide=True)
-            if self.format == "polars":
+            if self.format is OutputFormat.POLARS:
                 macro_df = macro_df.to_pandas()
             macro_df = macro_df.reset_index().rename(columns={"obs_date": "date"})
             macro_df = macro_df.sort_values("date")
@@ -546,8 +555,8 @@ class Client:
             )
 
         if news_tickers:
-            sentiment = self.news_sentiment(news_tickers, start=start, end=end, frequency="1D")
-            if self.format == "polars":
+            sentiment = self.news_sentiment(news_tickers, start=start, end=end, frequency=freq)
+            if self.format is OutputFormat.POLARS:
                 sentiment = sentiment.to_pandas()
             if not sentiment.empty:
                 sentiment = sentiment.rename(columns={"bucket": "date"})

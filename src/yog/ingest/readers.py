@@ -3,13 +3,27 @@ from __future__ import annotations
 import csv
 import hashlib
 from datetime import UTC, date, datetime
-from pathlib import Path
+from typing import TYPE_CHECKING, Any, TypedDict
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 import orjson
 
-EASTERN = ZoneInfo("America/New_York")
+from yog.enums import EASTERN_TZ, MISSING_VALUES, NEWS_TIME_FORMAT
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+EASTERN = ZoneInfo(EASTERN_TZ)
+
+
+class PutCallRecord(TypedDict):
+    symbol: str | None
+    trade_date: date
+    full_chain_ratio: float | None
+    expirations: list[tuple[date, float]]
+
+
 TRACKING_PREFIXES = ("utm_", "gaa_", "mc_", "_hs", "oly_", "pk_", "mtm_", "hsa_")
 TRACKING_PARAMS = {
     "_ga",
@@ -47,7 +61,7 @@ def _float_or_none(value: object) -> float | None:
     if value is None:
         return None
     text = str(value).strip()
-    if text == "" or text.lower() in {"na", "n/a", "null", "none", "."}:
+    if text == "" or text.lower() in MISSING_VALUES:
         return None
     return float(text)
 
@@ -80,7 +94,7 @@ def read_ohlcv_csv(
     path: Path,
     *,
     intraday: bool,
-    exchange_tz: str = "America/New_York",
+    exchange_tz: str = EASTERN_TZ,
 ) -> list[tuple[datetime | date, float, float, float, float, int | None]]:
     """Read an Alpha Vantage OHLCV CSV.
 
@@ -118,7 +132,7 @@ def read_ohlcv_csv(
     return rows
 
 
-def read_put_call_json(path: Path) -> dict | None:
+def read_put_call_json(path: Path) -> PutCallRecord | None:
     """Parse one put/call ratio payload.
 
     Some snapshot files are empty objects (for example
@@ -130,6 +144,8 @@ def read_put_call_json(path: Path) -> dict | None:
         return None
     expirations: list[tuple[date, float]] = []
     for item in payload.get("put_call_ratio_by_expiration") or []:
+        if not isinstance(item, dict):
+            continue
         raw_date = item.get("date")
         ratio = _float_or_none(item.get("value"))
         if raw_date and ratio is not None:
@@ -144,8 +160,12 @@ def read_put_call_json(path: Path) -> dict | None:
 
 def read_gold_silver_json(path: Path) -> list[tuple[date, float]]:
     payload = orjson.loads(path.read_bytes())
+    if not isinstance(payload, dict):
+        return []
     rows: list[tuple[date, float]] = []
     for item in payload.get("data") or []:
+        if not isinstance(item, dict):
+            continue
         raw_date = item.get("date")
         price = _float_or_none(item.get("price"))
         if raw_date and price is not None:
@@ -153,12 +173,14 @@ def read_gold_silver_json(path: Path) -> list[tuple[date, float]]:
     return rows
 
 
-def read_news_json(path: Path) -> list[dict]:
+def read_news_json(path: Path) -> list[dict[str, Any]]:
     payload = orjson.loads(path.read_bytes())
     if not isinstance(payload, dict):
         return []
     feed = payload.get("feed")
-    return feed if isinstance(feed, list) else []
+    if not isinstance(feed, list):
+        return []
+    return [item for item in feed if isinstance(item, dict)]
 
 
 def canonicalize_url(url: str) -> str:
@@ -189,5 +211,5 @@ def url_hash(url: str) -> bytes:
 
 def parse_news_time(value: str) -> datetime:
     """Parse Alpha Vantage's ``YYYYMMDDTHHMMSS`` US-Eastern timestamp."""
-    parsed = datetime.strptime(value.strip(), "%Y%m%dT%H%M%S")
+    parsed = datetime.strptime(value.strip(), NEWS_TIME_FORMAT)  # noqa: DTZ007 - provider timestamp is zone-less Eastern time
     return parsed.replace(tzinfo=EASTERN).astimezone(UTC)

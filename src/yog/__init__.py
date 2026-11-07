@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 __version__ = "0.1.0"
 
 
@@ -9,7 +11,7 @@ def main() -> None:
     app()
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     if name == "Client":
         from yog.client import Client
 

@@ -1,38 +1,45 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from psycopg import Connection
+from yog.enums import FileKind, IngestStatus, Provider
 
-from yog.ingest.discovery import FileSpec
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
-KIND_PRIORITY = {
-    "observation": 0,
-    "daily_bar": 1,
-    "put_call": 2,
-    "bar": 3,
-    "news": 4,
-    "skipped": 99,
+    from psycopg import Connection
+
+    from yog.ingest.discovery import FileSpec
+
+KIND_PRIORITY: dict[FileKind, int] = {
+    FileKind.OBSERVATION: 0,
+    FileKind.DAILY_BAR: 1,
+    FileKind.PUT_CALL: 2,
+    FileKind.BAR: 3,
+    FileKind.NEWS: 4,
+    FileKind.SKIPPED: 99,
 }
 
 
 @dataclass(frozen=True, slots=True)
 class PendingFile:
     path: str
-    dataset: str
-    kind: str
+    dataset: Provider
+    kind: FileKind
 
 
 def sync_manifest(conn: Connection, specs: Iterable[FileSpec]) -> None:
     rows = [
         (
             spec.path,
-            spec.dataset,
-            spec.kind,
+            spec.dataset.value,
+            spec.kind.value,
             spec.size_bytes,
             spec.mtime,
-            "skipped" if spec.kind == "skipped" else "pending",
+            IngestStatus.SKIPPED.value
+            if spec.kind is FileKind.SKIPPED
+            else IngestStatus.PENDING.value,
         )
         for spec in specs
     ]
@@ -48,43 +55,56 @@ def sync_manifest(conn: Connection, specs: Iterable[FileSpec]) -> None:
                 size_bytes = EXCLUDED.size_bytes,
                 mtime = EXCLUDED.mtime,
                 status = CASE
-                    WHEN EXCLUDED.status = 'skipped' THEN 'skipped'
-                    WHEN ingest_files.status = 'skipped' THEN EXCLUDED.status
+                    WHEN EXCLUDED.status = %s THEN %s
+                    WHEN ingest_files.status = %s THEN EXCLUDED.status
                     ELSE ingest_files.status
                 END,
                 updated_at = now()
             """,
-            rows,
+            [
+                (
+                    *row,
+                    IngestStatus.SKIPPED.value,
+                    IngestStatus.SKIPPED.value,
+                    IngestStatus.SKIPPED.value,
+                )
+                for row in rows
+            ],
         )
     conn.commit()
 
 
 def reset_stale_loading(conn: Connection) -> None:
     with conn.cursor() as cur:
-        cur.execute("UPDATE ingest_files SET status = 'pending' WHERE status = 'loading'")
+        cur.execute(
+            "UPDATE ingest_files SET status = %s WHERE status = %s",
+            (IngestStatus.PENDING.value, IngestStatus.LOADING.value),
+        )
     conn.commit()
 
 
 def pending_files(
     conn: Connection,
     *,
-    datasets: Sequence[str] | None = None,
-    kinds: Sequence[str] | None = None,
+    datasets: Sequence[Provider] | None = None,
+    kinds: Sequence[FileKind] | None = None,
     force: bool = False,
     limit: int | None = None,
 ) -> list[PendingFile]:
-    clauses = ["kind <> 'skipped'"]
-    params: list[object] = []
+    clauses = ["kind <> %s"]
+    params: list[object] = [FileKind.SKIPPED.value]
     if datasets:
         clauses.append("dataset = ANY(%s)")
-        params.append(list(datasets))
+        params.append([dataset.value for dataset in datasets])
     if kinds:
         clauses.append("kind = ANY(%s)")
-        params.append(list(kinds))
+        params.append([kind.value for kind in kinds])
     if force:
-        clauses.append("status <> 'skipped'")
+        clauses.append("status <> %s")
+        params.append(IngestStatus.SKIPPED.value)
     else:
-        clauses.append("status IN ('pending', 'failed')")
+        clauses.append("status IN (%s, %s)")
+        params.extend([IngestStatus.PENDING.value, IngestStatus.FAILED.value])
     sql = (
         "SELECT path, dataset, kind FROM ingest_files WHERE "
         + " AND ".join(clauses)
@@ -96,8 +116,10 @@ def pending_files(
     with conn.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
-    files = [PendingFile(path=row[0], dataset=row[1], kind=row[2]) for row in rows]
-    files.sort(key=lambda item: (KIND_PRIORITY.get(item.kind, 50), item.path))
+    files = [
+        PendingFile(path=row[0], dataset=Provider(row[1]), kind=FileKind(row[2])) for row in rows
+    ]
+    files.sort(key=lambda item: (KIND_PRIORITY[item.kind], item.path))
     return files
 
 
@@ -106,10 +128,10 @@ def mark_loading(conn: Connection, path: str) -> None:
         cur.execute(
             """
             UPDATE ingest_files
-            SET status = 'loading', started_at = now(), error = NULL
+            SET status = %s, started_at = now(), error = NULL
             WHERE path = %s
             """,
-            (path,),
+            (IngestStatus.LOADING.value, path),
         )
     conn.commit()
 
@@ -119,11 +141,11 @@ def mark_done(conn: Connection, path: str, rows_loaded: int) -> None:
         cur.execute(
             """
             UPDATE ingest_files
-            SET status = 'done', rows_loaded = %s, finished_at = now(),
+            SET status = %s, rows_loaded = %s, finished_at = now(),
                 error = NULL, updated_at = now()
             WHERE path = %s
             """,
-            (rows_loaded, path),
+            (IngestStatus.DONE.value, rows_loaded, path),
         )
     conn.commit()
 
@@ -133,16 +155,16 @@ def mark_failed(conn: Connection, path: str, error: str) -> None:
         cur.execute(
             """
             UPDATE ingest_files
-            SET status = 'failed', error = %s, finished_at = now(),
+            SET status = %s, error = %s, finished_at = now(),
                 updated_at = now()
             WHERE path = %s
             """,
-            (error[:4_000], path),
+            (IngestStatus.FAILED.value, error[:4_000], path),
         )
     conn.commit()
 
 
-def status_counts(conn: Connection) -> list[tuple[str, str, str, int]]:
+def status_counts(conn: Connection) -> list[tuple[Provider, FileKind, IngestStatus, int]]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -152,4 +174,8 @@ def status_counts(conn: Connection) -> list[tuple[str, str, str, int]]:
             ORDER BY dataset, kind, status
             """
         )
-        return list(cur.fetchall())
+        rows = cur.fetchall()
+    return [
+        (Provider(dataset), FileKind(kind), IngestStatus(status), int(count))
+        for dataset, kind, status, count in rows
+    ]

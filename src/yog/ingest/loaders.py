@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
+from datetime import date, datetime
+from typing import TYPE_CHECKING
 
-from psycopg import Connection
-
+from yog.enums import AvEndpoint, FileKind, Frequency, Provider, SeriesCode, Symbol, Timeframe
 from yog.ingest.copy import copy_rows
-from yog.ingest.discovery import FileSpec
-from yog.ingest.news import NewsFileResult
 from yog.ingest.readers import (
     read_gold_silver_json,
     read_ohlcv_csv,
@@ -16,28 +13,43 @@ from yog.ingest.readers import (
     read_value_csv,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+    from pathlib import Path
+
+    from psycopg import Connection
+
+    from yog.ingest.discovery import FileSpec
+    from yog.ingest.news import ArticleRow, NewsFileResult, TickerRow, TopicRow
+
+ObservationRow = tuple[int, date, float | None]
+DailyBarRow = tuple[int, date, float, float, float, float, int | None]
+BarRow = tuple[int, str, datetime, float, float, float, float, int | None]
+PutCallSummaryRow = tuple[int, date, float | None]
+PutCallExpirationRow = tuple[int, date, date, float]
+
 
 @dataclass(frozen=True, slots=True)
 class LoaderContext:
     data_root: Path
-    series_ids: dict[tuple[str, str], int]
-    instrument_ids: dict[str, int]
+    series_ids: dict[tuple[Provider, SeriesCode], int]
+    instrument_ids: dict[Symbol, int]
 
-    def series_id(self, provider: str | None, code: str | None) -> int:
+    def series_id(self, provider: Provider | None, code: SeriesCode | None) -> int:
         if provider is None or code is None:
             raise ValueError("series file is missing provider or code")
         try:
             return self.series_ids[(provider, code)]
         except KeyError as exc:
-            raise KeyError(f"unknown series {provider}:{code}") from exc
+            raise KeyError(f"unknown series {provider.value}:{code.value}") from exc
 
-    def instrument_id(self, symbol: str | None) -> int:
+    def instrument_id(self, symbol: Symbol | None) -> int:
         if symbol is None:
             raise ValueError("instrument file is missing a symbol")
         try:
             return self.instrument_ids[symbol]
         except KeyError as exc:
-            raise KeyError(f"unknown instrument {symbol}") from exc
+            raise KeyError(f"unknown instrument {symbol.value}") from exc
 
 
 def _path(ctx: LoaderContext, spec: FileSpec) -> Path:
@@ -45,25 +57,30 @@ def _path(ctx: LoaderContext, spec: FileSpec) -> Path:
 
 
 def load_file(conn: Connection, spec: FileSpec, ctx: LoaderContext) -> int:
-    if spec.kind == "observation":
-        return _load_observation(conn, spec, ctx)
-    if spec.kind == "daily_bar":
-        return _load_daily_bar(conn, spec, ctx)
-    if spec.kind == "bar":
-        return _load_bar(conn, spec, ctx)
-    if spec.kind == "put_call":
-        return _load_put_call(conn, spec, ctx)
-    raise ValueError(f"no loader for kind {spec.kind!r}")
+    match spec.kind:
+        case FileKind.OBSERVATION:
+            return _load_observation(conn, spec, ctx)
+        case FileKind.DAILY_BAR:
+            return _load_daily_bar(conn, spec, ctx)
+        case FileKind.BAR:
+            return _load_bar(conn, spec, ctx)
+        case FileKind.PUT_CALL:
+            return _load_put_call(conn, spec, ctx)
+    raise ValueError(f"no loader for kind {spec.kind.value!r}")
 
 
 def _load_observation(conn: Connection, spec: FileSpec, ctx: LoaderContext) -> int:
     series_id = ctx.series_id(spec.provider, spec.code)
     path = _path(ctx, spec)
-    if path.parent.name == "daily" and path.parent.parent.name == "GOLD_SILVER_HISTORY":
+    rows: Sequence[tuple[date, float | None]]
+    if (
+        path.parent.name == Frequency.DAILY.value
+        and path.parent.parent.name == AvEndpoint.GOLD_SILVER_HISTORY.value
+    ):
         rows = read_gold_silver_json(path)
     else:
         rows = read_value_csv(path)
-    payload = ((series_id, obs_date, value) for obs_date, value in rows)
+    payload: Iterable[ObservationRow] = ((series_id, obs_date, value) for obs_date, value in rows)
     with conn.transaction(), conn.cursor() as cur:
         cur.execute(
             """
@@ -93,7 +110,7 @@ def _load_observation(conn: Connection, spec: FileSpec, ctx: LoaderContext) -> i
 def _load_daily_bar(conn: Connection, spec: FileSpec, ctx: LoaderContext) -> int:
     instrument_id = ctx.instrument_id(spec.symbol)
     rows = read_ohlcv_csv(_path(ctx, spec), intraday=False)
-    payload = (
+    payload: Iterable[DailyBarRow] = (
         (instrument_id, trade_date, open_, high, low, close, volume)
         for trade_date, open_, high, low, close, volume in rows
     )
@@ -139,10 +156,10 @@ def _load_daily_bar(conn: Connection, spec: FileSpec, ctx: LoaderContext) -> int
 
 def _load_bar(conn: Connection, spec: FileSpec, ctx: LoaderContext) -> int:
     instrument_id = ctx.instrument_id(spec.symbol)
-    timeframe = spec.timeframe or "5m"
+    timeframe = spec.timeframe or Timeframe.M5
     rows = read_ohlcv_csv(_path(ctx, spec), intraday=True)
-    payload = (
-        (instrument_id, timeframe, ts, open_, high, low, close, volume)
+    payload: Iterable[BarRow] = (
+        (instrument_id, timeframe.value, ts, open_, high, low, close, volume)
         for ts, open_, high, low, close, volume in rows
         if isinstance(ts, datetime)
     )
@@ -193,12 +210,12 @@ def _load_put_call(conn: Connection, spec: FileSpec, ctx: LoaderContext) -> int:
     record = read_put_call_json(_path(ctx, spec))
     if record is None:
         return 0
-    summary = (
+    summary: PutCallSummaryRow = (
         instrument_id,
         record["trade_date"],
         record["full_chain_ratio"],
     )
-    expiration_rows = [
+    expiration_rows: list[PutCallExpirationRow] = [
         (instrument_id, record["trade_date"], expiration, ratio)
         for expiration, ratio in record["expirations"]
     ]
@@ -258,9 +275,9 @@ def _load_put_call(conn: Connection, spec: FileSpec, ctx: LoaderContext) -> int:
 
 def load_news_batch(conn: Connection, results: list[NewsFileResult]) -> int:
     """Insert a batch of parsed news files in one transaction."""
-    articles: list[tuple] = []
-    topics: list[tuple] = []
-    tickers: list[tuple] = []
+    articles: list[ArticleRow] = []
+    topics: list[TopicRow] = []
+    tickers: list[TickerRow] = []
     for result in results:
         if result.error:
             continue

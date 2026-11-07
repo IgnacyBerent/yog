@@ -1,0 +1,52 @@
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+extend-exclude = ["migrations/versions"]
+
+[lint]
+select = [
+    "A",
+    "ANN",
+    "ARG",
+    "B",
+    "BLE",
+    "C4",
+    "C90",
+    "DTZ",
+    "E",
+    "EM",
+    "F",
+    "FLY",
+    "FURB",
+    "G",
+    "I",
+    "LOG",
+    "N",
+    "PERF",
+    "PIE",
+    "PT",
+    "RET",
+    "RUF",
+    "S",
+    "SIM",
+    "TC",
+    "TID",
+    "TRY",
+    "UP",
+    "W",
+]
+ignore = [
+    "ANN401", # Any is unavoidable at pandas/psycopg boundaries
+    "B008",   # Typer options in argument defaults
+    "EM101",  # raw string in exception
+    "EM102",  # f-string in exception
+    "S608",   # SQL f-strings are built only from static fragments
+    "TRY003", # long exception messages
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["S101"]
+"src/yog/client.py" = ["A002"] # keep the public `format=` keyword
+"src/yog/cli.py" = ["TC001"]   # Typer resolves enum annotations at runtime
+"src/yog/db/models.py" = ["TC003"] # SQLAlchemy resolves Mapped annotations at runtime
+"migrations/**" = ["E501"]

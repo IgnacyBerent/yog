@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
+from yog.enums import FALLBACK_NEWS_TITLE
 from yog.ingest.readers import (
     _float_or_none,
     canonicalize_url,
@@ -11,13 +13,30 @@ from yog.ingest.readers import (
     url_hash,
 )
 
+ArticleRow = tuple[
+    str,
+    str,
+    bytes,
+    str,
+    str | None,
+    datetime,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    float | None,
+    str | None,
+]
+TopicRow = tuple[bytes, str, float | None]
+TickerRow = tuple[bytes, str, float | None, float | None, str | None]
+
 
 @dataclass(slots=True)
 class NewsFileResult:
     path: str
-    articles: list[tuple] = field(default_factory=list)
-    topics: list[tuple] = field(default_factory=list)
-    tickers: list[tuple] = field(default_factory=list)
+    articles: list[ArticleRow] = field(default_factory=list)
+    topics: list[TopicRow] = field(default_factory=list)
+    tickers: list[TickerRow] = field(default_factory=list)
     count: int = 0
     error: str | None = None
 
@@ -28,9 +47,9 @@ def parse_news_file(args: tuple[str, str]) -> NewsFileResult:
     result = NewsFileResult(path=relative_path)
     try:
         feed = read_news_json(Path(absolute_path))
-        articles: dict[bytes, tuple] = {}
+        articles: dict[bytes, ArticleRow] = {}
         topics: dict[tuple[bytes, str], float | None] = {}
-        tickers: dict[tuple[bytes, str], tuple] = {}
+        tickers: dict[tuple[bytes, str], TickerRow] = {}
 
         for item in feed:
             url = (item.get("url") or "").strip()
@@ -44,7 +63,7 @@ def parse_news_file(args: tuple[str, str]) -> NewsFileResult:
             except ValueError:
                 continue
 
-            title = (item.get("title") or "").strip() or "(untitled)"
+            title = (item.get("title") or "").strip() or FALLBACK_NEWS_TITLE
             articles.setdefault(
                 digest,
                 (

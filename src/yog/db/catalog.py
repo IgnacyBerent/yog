@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from psycopg import Connection
+from typing import TYPE_CHECKING
+
 from psycopg.types.json import Jsonb
 
 from yog.catalog import INSTRUMENTS, SERIES
+from yog.enums import Provider, SeriesCode, Symbol
+
+if TYPE_CHECKING:
+    from psycopg import Connection
 
 
 def seed_catalog(conn: Connection) -> tuple[int, int]:
@@ -21,9 +26,9 @@ def seed_catalog(conn: Connection) -> tuple[int, int]:
             """,
             [
                 (
-                    spec.symbol,
+                    spec.symbol.value,
                     spec.name,
-                    spec.asset_class,
+                    spec.asset_class.value,
                     spec.currency,
                     spec.exchange_tz,
                 )
@@ -48,13 +53,13 @@ def seed_catalog(conn: Connection) -> tuple[int, int]:
             """,
             [
                 (
-                    spec.provider,
-                    spec.code,
+                    spec.provider.value,
+                    spec.code.value,
                     spec.name,
                     spec.description or None,
-                    spec.frequency,
+                    spec.frequency.value,
                     spec.unit,
-                    spec.kind,
+                    spec.kind.value,
                     spec.source_url,
                     spec.release_lag_days,
                     Jsonb(spec.extra),
@@ -66,13 +71,15 @@ def seed_catalog(conn: Connection) -> tuple[int, int]:
     return len(INSTRUMENTS), len(SERIES)
 
 
-def load_series_ids(conn: Connection) -> dict[tuple[str, str], int]:
+def load_series_ids(conn: Connection) -> dict[tuple[Provider, SeriesCode], int]:
     with conn.cursor() as cur:
         cur.execute("SELECT provider, code, id FROM series")
-        return {(provider, code): series_id for provider, code, series_id in cur}
+        return {
+            (Provider(provider), SeriesCode(code)): series_id for provider, code, series_id in cur
+        }
 
 
-def load_instrument_ids(conn: Connection) -> dict[str, int]:
+def load_instrument_ids(conn: Connection) -> dict[Symbol, int]:
     with conn.cursor() as cur:
         cur.execute("SELECT symbol, id FROM instruments")
-        return {symbol: instrument_id for symbol, instrument_id in cur}
+        return {Symbol(symbol): instrument_id for symbol, instrument_id in cur}

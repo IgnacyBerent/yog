@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -8,11 +9,15 @@ from rich.table import Table
 
 from yog.config import get_settings
 from yog.db.catalog import seed_catalog
+from yog.enums import FileKind, Provider
 from yog.ingest.common import connect
 from yog.ingest.discovery import discover_files
 from yog.ingest.manifest import status_counts, sync_manifest
 from yog.ingest.runner import run_ingest
 from yog.validate import print_checks, table_counts, validate
+
+if TYPE_CHECKING:
+    from alembic.config import Config
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -30,7 +35,7 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _alembic_config():
+def _alembic_config() -> Config:
     from alembic.config import Config
 
     root = _repo_root()
@@ -61,14 +66,14 @@ def scan() -> None:
 
 @app.command()
 def ingest(
-    dataset: list[str] | None = typer.Option(
-        None, "--dataset", "-d", help="Restrict to a dataset (alpha_vantage, fred)."
+    dataset: list[Provider] | None = typer.Option(
+        None, "--dataset", "-d", help="Restrict to a dataset."
     ),
-    kind: list[str] | None = typer.Option(
+    kind: list[FileKind] | None = typer.Option(
         None,
         "--kind",
         "-k",
-        help="Restrict to a kind (observation, daily_bar, put_call, bar, news).",
+        help="Restrict to a kind.",
     ),
     force: bool = typer.Option(False, help="Re-process files already marked done."),
     limit: int | None = typer.Option(None, help="Process at most this many files."),

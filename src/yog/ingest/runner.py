@@ -3,10 +3,9 @@ from __future__ import annotations
 import os
 import queue
 import threading
-from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from psycopg.types.json import Jsonb
 from rich.progress import (
@@ -14,12 +13,14 @@ from rich.progress import (
     MofNCompleteColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TextColumn,
     TimeElapsedColumn,
 )
 
 from yog.config import get_settings
 from yog.db.catalog import load_instrument_ids, load_series_ids, seed_catalog
+from yog.enums import FileKind, Provider
 from yog.ingest.common import connect
 from yog.ingest.discovery import FileSpec, discover_files
 from yog.ingest.loaders import LoaderContext, load_file, load_news_batch
@@ -32,6 +33,12 @@ from yog.ingest.manifest import (
     sync_manifest,
 )
 from yog.ingest.news import parse_news_file
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+    from pathlib import Path
+
+    from psycopg import Connection
 
 
 @dataclass
@@ -60,21 +67,24 @@ def _progress() -> Progress:
     )
 
 
-def _chunks(items: Sequence, size: int):
+def _chunks[T](items: Sequence[T], size: int) -> Iterator[Sequence[T]]:
     for index in range(0, len(items), size):
         yield items[index : index + size]
 
 
-def _start_run(args: dict) -> int:
+def _start_run(args: dict[str, object]) -> int:
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO ingest_runs (args) VALUES (%s) RETURNING id",
                 (Jsonb(args),),
             )
-            run_id = cur.fetchone()[0]
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError("failed to create ingest run")
+            run_id = int(row[0])
         conn.commit()
-    return int(run_id)
+    return run_id
 
 
 def _finish_run(run_id: int, stats: IngestStats) -> None:
@@ -94,7 +104,9 @@ def _finish_run(run_id: int, stats: IngestStats) -> None:
         conn.commit()
 
 
-def _process_one(conn, spec: FileSpec, ctx: LoaderContext) -> tuple[int, bool, str | None]:
+def _process_one(
+    conn: Connection, spec: FileSpec, ctx: LoaderContext
+) -> tuple[int, bool, str | None]:
     mark_loading(conn, spec.path)
     try:
         rows = load_file(conn, spec, ctx)
@@ -112,7 +124,7 @@ def _thread_worker(
     spec_by_path: dict[str, FileSpec],
     ctx: LoaderContext,
     progress: Progress,
-    task_id,
+    task_id: TaskID,
     stats: IngestStats,
     stats_lock: threading.Lock,
     stop_event: threading.Event,
@@ -128,7 +140,7 @@ def _thread_worker(
             spec = spec_by_path.get(path)
             try:
                 if spec is None:
-                    raise FileNotFoundError(path)
+                    raise FileNotFoundError(path)  # noqa: TRY301 - captured below
                 rows, ok, message = _process_one(conn, spec, ctx)
                 if ok:
                     local.processed += 1
@@ -240,8 +252,8 @@ def _run_news_files(
 
 def run_ingest(
     *,
-    datasets: Sequence[str] | None = None,
-    kinds: Sequence[str] | None = None,
+    datasets: Sequence[Provider] | None = None,
+    kinds: Sequence[FileKind] | None = None,
     force: bool = False,
     limit: int | None = None,
     workers: int | None = None,
@@ -284,8 +296,8 @@ def run_ingest(
             files.append(spec)
 
     if dry_run:
-        news_files = [spec for spec in files if spec.kind == "news"]
-        other_files = [spec for spec in files if spec.kind != "news"]
+        news_files = [spec for spec in files if spec.kind is FileKind.NEWS]
+        other_files = [spec for spec in files if spec.kind is not FileKind.NEWS]
         stats = IngestStats(processed=len(files), skipped=len(missing))
         print(
             f"would process {len(other_files)} regular files and "
@@ -293,13 +305,13 @@ def run_ingest(
         )
         return stats
 
-    news_files = [spec for spec in files if spec.kind == "news"]
-    other_files = [spec for spec in files if spec.kind != "news"]
+    news_files = [spec for spec in files if spec.kind is FileKind.NEWS]
+    other_files = [spec for spec in files if spec.kind is not FileKind.NEWS]
 
     run_id = _start_run(
         {
-            "datasets": list(datasets) if datasets else None,
-            "kinds": list(kinds) if kinds else None,
+            "datasets": [dataset.value for dataset in datasets] if datasets else None,
+            "kinds": [kind.value for kind in kinds] if kinds else None,
             "force": force,
             "limit": limit,
             "workers": workers,

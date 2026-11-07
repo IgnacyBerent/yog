@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from psycopg import Connection
+from yog.enums import IngestStatus
 
-TABLE_COUNTS = {
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from psycopg import Connection
+
+TABLE_COUNTS: dict[str, str] = {
     "instruments": "SELECT count(*) FROM instruments",
     "series": "SELECT count(*) FROM series",
     "observations": "SELECT count(*) FROM observations",
@@ -18,7 +24,7 @@ TABLE_COUNTS = {
     "ingest_files": "SELECT count(*) FROM ingest_files",
 }
 
-EXPECTED = {
+EXPECTED: dict[str, int] = {
     "instruments": 9,
     "series": 29,
     "observations": 198_466,
@@ -28,6 +34,10 @@ EXPECTED = {
     "put_call_expirations": 535_325,
     "ingest_files": 58_093,
 }
+
+NEWS_ARTICLES_MIN = 1_000_000
+NEWS_ARTICLES_MAX = 1_471_269
+NEWS_EXPECTED_LABEL = f"<= {NEWS_ARTICLES_MAX:,} and > {NEWS_ARTICLES_MIN:,}"
 
 
 @dataclass
@@ -43,14 +53,20 @@ def table_counts(conn: Connection) -> dict[str, int]:
     with conn.cursor() as cur:
         for name, query in TABLE_COUNTS.items():
             cur.execute(query)
-            counts[name] = int(cur.fetchone()[0])
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError(f"count query returned no row for {name}")
+            counts[name] = int(row[0])
     return counts
 
 
-def _scalar(conn: Connection, query: str) -> int:
+def _scalar(conn: Connection, query: str, params: Sequence[object] = ()) -> int:
     with conn.cursor() as cur:
-        cur.execute(query)
-        return int(cur.fetchone()[0])
+        cur.execute(query, params)
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError("scalar query returned no row")
+        return int(row[0])
 
 
 def validate(conn: Connection, *, full: bool = True) -> tuple[list[Check], bool]:
@@ -67,41 +83,55 @@ def validate(conn: Connection, *, full: bool = True) -> tuple[list[Check], bool]
         Check(
             "count:news_articles",
             news_actual,
-            "<= 1,471,269 and > 1,000,000",
-            1_000_000 < news_actual <= 1_471_269,
+            NEWS_EXPECTED_LABEL,
+            NEWS_ARTICLES_MIN < news_actual <= NEWS_ARTICLES_MAX,
         )
     )
 
-    quality_queries = {
-        "bars:ohlc_invalid": """
+    quality_queries: dict[str, tuple[str, tuple[object, ...]]] = {
+        "bars:ohlc_invalid": (
+            """
             SELECT count(*) FROM bars
             WHERE high < low OR high < open OR high < close
                OR low > open OR low > close OR volume < 0
-        """,
-        "daily_bars:ohlc_invalid": """
+            """,
+            (),
+        ),
+        "daily_bars:ohlc_invalid": (
+            """
             SELECT count(*) FROM daily_bars
             WHERE high < low OR high < open OR high < close
                OR low > open OR low > close OR volume < 0
-        """,
-        "put_call_summaries:null_ratios": """
+            """,
+            (),
+        ),
+        "put_call_summaries:null_ratios": (
+            """
             SELECT count(*) FROM put_call_summaries
             WHERE full_chain_ratio IS NULL
-        """,
-        "put_call_expirations:negative": """
-            SELECT count(*) FROM put_call_expirations WHERE ratio < 0
-        """,
-        "news_articles:duplicate_hashes": """
-            SELECT count(*) - count(DISTINCT url_hash) FROM news_articles
-        """,
-        "observations:null_values": """
-            SELECT count(*) FROM observations WHERE value IS NULL
-        """,
-        "ingest_files:stuck_loading": """
-            SELECT count(*) FROM ingest_files WHERE status = 'loading'
-        """,
-        "ingest_files:failed": """
-            SELECT count(*) FROM ingest_files WHERE status = 'failed'
-        """,
+            """,
+            (),
+        ),
+        "put_call_expirations:negative": (
+            "SELECT count(*) FROM put_call_expirations WHERE ratio < 0",
+            (),
+        ),
+        "news_articles:duplicate_hashes": (
+            "SELECT count(*) - count(DISTINCT url_hash) FROM news_articles",
+            (),
+        ),
+        "observations:null_values": (
+            "SELECT count(*) FROM observations WHERE value IS NULL",
+            (),
+        ),
+        "ingest_files:stuck_loading": (
+            "SELECT count(*) FROM ingest_files WHERE status = %s",
+            (IngestStatus.LOADING.value,),
+        ),
+        "ingest_files:failed": (
+            "SELECT count(*) FROM ingest_files WHERE status = %s",
+            (IngestStatus.FAILED.value,),
+        ),
     }
     quality_expected = {
         "bars:ohlc_invalid": 0,
@@ -113,8 +143,8 @@ def validate(conn: Connection, *, full: bool = True) -> tuple[list[Check], bool]
         "ingest_files:stuck_loading": 0,
         "ingest_files:failed": 0,
     }
-    for name, query in quality_queries.items():
-        actual = _scalar(conn, query)
+    for name, (query, params) in quality_queries.items():
+        actual = _scalar(conn, query, params)
         expected = quality_expected[name]
         checks.append(Check(name, actual, expected, actual == expected))
 
@@ -124,7 +154,7 @@ def validate(conn: Connection, *, full: bool = True) -> tuple[list[Check], bool]
         ok = all(
             check.ok
             for check in checks
-            if check.name.startswith("count:") and check.name not in {"count:news_articles"}
+            if check.name.startswith("count:") and check.name != "count:news_articles"
         )
     return checks, ok
 

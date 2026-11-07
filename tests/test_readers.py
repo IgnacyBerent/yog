@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,8 +14,11 @@ from yog.ingest.readers import (
     read_value_csv,
 )
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
-def test_read_value_csv_preserves_missing_values(tmp_path):
+
+def test_read_value_csv_preserves_missing_values(tmp_path: Path) -> None:
     path = tmp_path / "series.csv"
     path.write_text(
         "observation_date,VALUE\n2024-01-01,1.5\n2024-01-02,\n2024-01-03,.\n",
@@ -28,7 +32,7 @@ def test_read_value_csv_preserves_missing_values(tmp_path):
     ]
 
 
-def test_read_ohlcv_csv_daily(tmp_path):
+def test_read_ohlcv_csv_daily(tmp_path: Path) -> None:
     path = tmp_path / "daily.csv"
     path.write_text(
         "timestamp,open,high,low,close,volume\n2024-01-03,100,110,90,105,1000\n",
@@ -40,7 +44,7 @@ def test_read_ohlcv_csv_daily(tmp_path):
     ]
 
 
-def test_read_ohlcv_csv_intraday_converts_eastern_to_utc(tmp_path):
+def test_read_ohlcv_csv_intraday_converts_eastern_to_utc(tmp_path: Path) -> None:
     path = tmp_path / "intraday.csv"
     path.write_text(
         "timestamp,open,high,low,close,volume\n"
@@ -56,14 +60,14 @@ def test_read_ohlcv_csv_intraday_converts_eastern_to_utc(tmp_path):
     assert rows[1][0] == datetime(2024, 7, 15, 13, 30, tzinfo=UTC)
 
 
-def test_read_put_call_json_empty_payload_returns_none(tmp_path):
+def test_read_put_call_json_empty_payload_returns_none(tmp_path: Path) -> None:
     path = tmp_path / "empty.json"
     path.write_text("{}", encoding="utf-8")
 
     assert read_put_call_json(path) is None
 
 
-def test_read_put_call_json_skips_null_expiration_values(tmp_path):
+def test_read_put_call_json_skips_null_expiration_values(tmp_path: Path) -> None:
     path = tmp_path / "pc.json"
     path.write_text(
         """
@@ -88,19 +92,19 @@ def test_read_put_call_json_skips_null_expiration_values(tmp_path):
     assert record["expirations"] == [(date(2024, 1, 5), 0.82)]
 
 
-def test_read_news_json_rejects_non_object(tmp_path):
+def test_read_news_json_rejects_non_object(tmp_path: Path) -> None:
     path = tmp_path / "feed.json"
     path.write_text("[]", encoding="utf-8")
 
     assert read_news_json(path) == []
 
 
-def test_canonicalize_url_strips_tracking_and_fragment():
+def test_canonicalize_url_strips_tracking_and_fragment() -> None:
     url = "HTTPS://Example.COM/story?id=7&utm_source=x&utm_medium=y&fbclid=abc&b=2&a=1#section"
 
     assert canonicalize_url(url) == "https://example.com/story?a=1&b=2&id=7"
 
 
-def test_parse_news_time_is_eastern():
+def test_parse_news_time_is_eastern() -> None:
     assert parse_news_time("20240115T093000") == datetime(2024, 1, 15, 14, 30, tzinfo=UTC)
     assert parse_news_time("20240715T093000") == datetime(2024, 7, 15, 13, 30, tzinfo=UTC)

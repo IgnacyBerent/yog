@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from yog.config import get_settings
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @lru_cache

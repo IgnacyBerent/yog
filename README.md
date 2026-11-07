@@ -197,11 +197,20 @@ US Eastern assumption.
 
 ## Development
 
+Lint and type-check configuration lives in `ruff.toml` and `pyproject.toml`
+(`[tool.mypy]`, strict mode for `src/yog`).
+
 ```bash
 uv run ruff check src tests migrations
-uv run ruff format src tests migrations
+uv run ruff format --check src tests migrations
+uv run mypy
 uv run pytest
 ```
+
+`mypy` uses `pandas-stubs`, so dataframe-returning client methods are typed.
+Domain values such as file kinds, ingest statuses, providers, symbols and series
+codes are `StrEnum` members in `src/yog/enums.py`; database columns stay as plain
+strings, with explicit `.value` conversion at persistence boundaries.
 
 Create a new migration after changing `src/yog/db/models.py`:
 
