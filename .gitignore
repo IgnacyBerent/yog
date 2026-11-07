@@ -8,4 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local configuration and tooling caches
+.env
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Data snapshot
 dataset/

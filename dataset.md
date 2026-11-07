@@ -47,13 +47,16 @@ dataset/
     │   ├── BRENT/daily.csv
     │   ├── COPPER/monthly.csv
     │   ├── CPI/monthly.csv
+    │   ├── DURABLES.csv
     │   ├── FEDERAL_FUNDS_RATE/daily.csv
     │   ├── GOLD_SILVER_HISTORY/daily/{XAU,XAG}.json
     │   ├── HISTORICAL_PUT_CALL_RATIO/<ticker>/<YYYY-MM-DD>.json
+    │   ├── INFLATION.csv
     │   ├── NATURAL_GAS/daily.csv
     │   ├── NEWS_SENTIMENT/<topic>/<window>.json
     │   ├── NONFARM_PAYROLL.csv
     │   ├── REAL_GDP/quarterly.csv
+    │   ├── RETAIL_SALES.csv
     │   ├── TIME_SERIES_DAILY/SPY.csv
     │   ├── TIME_SERIES_INTRADAY/{1min,5min}/<ticker>/<YYYY-MM>.csv
     │   ├── TREASURY_YIELD/daily/<maturity>.csv
@@ -83,7 +86,7 @@ dataset/
 | `HISTORICAL_PUT_CALL_RATIO` | 42,588 | 2008-01-02 → 2026-10-23 | Daily, per ticker |
 | `NEWS_SENTIMENT` | 9,679 | 2010-01 → 2026-10-23 | Weekly archives, 9 topics |
 | Commodities (`WTI`, `BRENT`, `NATURAL_GAS`, `COPPER`, `GOLD_SILVER_HISTORY`) | 6 | 1980 → 2026 | Daily / monthly |
-| Economic indicators (Alpha Vantage) | 11 | 1913 → 2026 | Daily / monthly / quarterly |
+| Economic indicators (Alpha Vantage) | 14 | 1913 → 2026 | Daily / monthly / quarterly / annual |
 | FRED series | 9 | 1919 → 2026 | Daily / weekly / monthly |
 
 Total: **58,093 files**, approximately **6.9 GB**.
@@ -333,6 +336,9 @@ series ultimately come from U.S. government statistical agencies via FRED.
 | `TREASURY_YIELD/daily/*.csv` | `TREASURY_YIELD` | US Treasury yield for a given maturity (3-month, 2-, 5-, 7-, 10-, 30-year) | Daily | 1962 → 2026-10-22 |
 | `FEDERAL_FUNDS_RATE/daily.csv` | `FEDERAL_FUNDS_RATE` | Federal funds rate (interest rate) of the United States | Daily | 1954-07-01 → 2026-10-22 |
 | `CPI/monthly.csv` | `CPI` | Consumer Price Index of the United States | Monthly | 1913-01-01 → 2026-09-01 |
+| `DURABLES.csv` | `DURABLES` | Manufacturers' New Orders: Durable Goods | Monthly | 1992-02-01 → 2026-08-01 |
+| `INFLATION.csv` | `INFLATION` | Annual inflation rate (consumer prices) of the United States | Annual | 1960-01-01 → 2024-01-01 |
+| `RETAIL_SALES.csv` | `RETAIL_SALES` | Advance Retail Sales: Retail Trade and Food Services | Monthly | 1992-01-01 → 2026-09-01 |
 | `UNEMPLOYMENT.csv` | `UNEMPLOYMENT` | Monthly unemployment data of the United States | Monthly | 1948-01-01 → 2026-09-01 |
 | `NONFARM_PAYROLL.csv` | `NONFARM_PAYROLL` | All Employees: Total Nonfarm (Total Nonfarm Payroll) | Monthly | 1939-01-01 → 2026-09-01 |
 
@@ -350,6 +356,15 @@ Official wording:
   (CPI) of the United States. CPI is widely regarded as the barometer of
   inflation levels in the broader economy." Source: U.S. Bureau of Labor
   Statistics via FRED. Unit: **index 1982-1984 = 100**.
+- **Durables** — "This API returns the monthly manufacturers' new orders for
+  durable goods in the United States." Source: U.S. Census Bureau via FRED.
+  Unit: **millions of dollars**.
+- **Inflation** — "This API returns the annual inflation rates (consumer
+  prices) of the United States." Source: World Bank via FRED. Unit:
+  **percent**.
+- **Retail Sales** — "This API returns the monthly Advance Retail Sales: Retail
+  Trade and Food Services data of the United States." Source: U.S. Census
+  Bureau via FRED. Unit: **millions of dollars**.
 - **Unemployment** — "This API returns the monthly unemployment data of the
   United States. The unemployment rate represents the number of unemployed as a
   percentage of the labor force. Labor force data are restricted to people 16
