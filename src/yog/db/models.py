@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -53,7 +52,7 @@ class Series(Base):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     source_url: Mapped[str | None] = mapped_column(Text)
     release_lag_days: Mapped[int | None] = mapped_column(SmallInteger)
-    extra: Mapped[dict[str, Any]] = mapped_column(
+    extra: Mapped[dict[str, object]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb"), default=dict
     )
 
@@ -238,9 +237,9 @@ class IngestRun(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    args: Mapped[dict[str, Any]] = mapped_column(
+    args: Mapped[dict[str, object]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb"), default=dict
     )
-    stats: Mapped[dict[str, Any]] = mapped_column(
+    stats: Mapped[dict[str, object]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb"), default=dict
     )

@@ -108,8 +108,7 @@ uv run yog validate
 
 ## Client
 
-`yog.Client` is synchronous and returns a `pandas.DataFrame` by default. Pass
-`format="polars"` to receive Polars frames instead.
+`yog.Client` is synchronous and returns a `pandas.DataFrame`.
 
 ```python
 import yog
@@ -165,13 +164,6 @@ Pass an explicit connection string when needed:
 
 ```python
 client = yog.Client("postgresql+psycopg://yog:yog@localhost:5432/yog")
-```
-
-Polars output:
-
-```python
-client = yog.Client(format="polars")
-df = client.daily_bars("SPY", start="2024-01-01")
 ```
 
 ## Schema overview

@@ -113,13 +113,6 @@ class Timeframe(StrEnum):
     M5 = "5m"
 
 
-class OutputFormat(StrEnum):
-    """Dataframe implementation returned by the client."""
-
-    PANDAS = "pandas"
-    POLARS = "polars"
-
-
 class PutCallLevel(StrEnum):
     """Granularity of put/call data returned by the client."""
 

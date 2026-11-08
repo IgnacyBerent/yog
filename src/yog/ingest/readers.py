@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
@@ -22,6 +22,39 @@ class PutCallRecord(TypedDict):
     trade_date: date
     full_chain_ratio: float | None
     expirations: list[tuple[date, float]]
+
+
+class NewsTopic(TypedDict, total=False):
+    """A topic tag attached to a news article."""
+
+    topic: str
+    relevance_score: str | float
+
+
+class TickerSentiment(TypedDict, total=False):
+    """Per-ticker sentiment attached to a news article."""
+
+    ticker: str
+    relevance_score: str | float
+    ticker_sentiment_score: str | float
+    ticker_sentiment_label: str
+
+
+class NewsFeedArticle(TypedDict, total=False):
+    """One article from an Alpha Vantage ``NEWS_SENTIMENT`` feed."""
+
+    url: str
+    time_published: str
+    title: str
+    summary: str
+    source: str
+    source_domain: str
+    category_within_source: str
+    banner_image: str
+    overall_sentiment_score: str | float
+    overall_sentiment_label: str
+    topics: list[NewsTopic]
+    ticker_sentiment: list[TickerSentiment]
 
 
 TRACKING_PREFIXES = ("utm_", "gaa_", "mc_", "_hs", "oly_", "pk_", "mtm_", "hsa_")
@@ -173,14 +206,14 @@ def read_gold_silver_json(path: Path) -> list[tuple[date, float]]:
     return rows
 
 
-def read_news_json(path: Path) -> list[dict[str, Any]]:
+def read_news_json(path: Path) -> list[NewsFeedArticle]:
     payload = orjson.loads(path.read_bytes())
     if not isinstance(payload, dict):
         return []
     feed = payload.get("feed")
     if not isinstance(feed, list):
         return []
-    return [item for item in feed if isinstance(item, dict)]
+    return [cast("NewsFeedArticle", item) for item in feed if isinstance(item, dict)]
 
 
 def canonicalize_url(url: str) -> str:

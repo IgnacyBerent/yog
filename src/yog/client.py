@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Self
 
 import pandas as pd
 from sqlalchemy import Engine, create_engine, select, text
@@ -18,7 +18,6 @@ from yog.db.models import (
 )
 from yog.enums import (
     NewsFrequency,
-    OutputFormat,
     Provider,
     PutCallLevel,
     Timeframe,
@@ -28,6 +27,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
     from sqlalchemy.engine import Connection as SaConnection
+    from sqlalchemy.sql import Selectable
+
+    SqlParam = str | bytes | date | datetime | float | int | Sequence[str] | None
 
 
 def _as_list(value: str | Sequence[str] | None) -> list[str] | None:
@@ -80,19 +82,15 @@ def _as_datetime(
 class Client:
     """Synchronous read client for the PostgreSQL dataset.
 
-    All methods return a ``pandas.DataFrame`` by default. Pass
-    ``format="polars"`` (or ``OutputFormat.POLARS``) to receive a Polars
-    DataFrame instead.
+    All methods return a ``pandas.DataFrame``.
     """
 
     def __init__(
         self,
         database_url: str | None = None,
         *,
-        format: OutputFormat | str = OutputFormat.PANDAS,
         engine: Engine | None = None,
     ) -> None:
-        self.format = OutputFormat(format)
         self.engine = engine or create_engine(
             database_url or get_settings().database_url,
             pool_pre_ping=True,
@@ -102,26 +100,19 @@ class Client:
     def close(self) -> None:
         self.engine.dispose()
 
-    def __enter__(self) -> Client:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:
         self.close()
 
     # ------------------------------------------------------------------ helpers
-    def _finalize(self, frame: pd.DataFrame) -> Any:
-        if self.format is OutputFormat.POLARS:
-            import polars as pl
-
-            return pl.from_pandas(frame)
-        return frame
-
     @staticmethod
-    def _read(stmt: Any, conn: SaConnection) -> pd.DataFrame:
+    def _read(stmt: Selectable, conn: SaConnection) -> pd.DataFrame:
         return pd.read_sql(stmt, conn)
 
     # ------------------------------------------------------------------ catalogue
-    def catalog(self) -> Any:
+    def catalog(self) -> pd.DataFrame:
         """Return the series catalogue."""
         stmt = select(
             Series.provider,
@@ -135,10 +126,10 @@ class Client:
             Series.release_lag_days,
         ).order_by(Series.provider, Series.code)
         with self.engine.connect() as conn:
-            df = self._read(stmt, conn)
-        return self._finalize(df)
+            return self._read(stmt, conn)
 
-    def instruments(self) -> Any:
+    def instruments(self) -> pd.DataFrame:
+        """Return the instrument catalogue."""
         stmt = select(
             Instrument.symbol,
             Instrument.name,
@@ -147,8 +138,7 @@ class Client:
             Instrument.exchange_tz,
         ).order_by(Instrument.symbol)
         with self.engine.connect() as conn:
-            df = self._read(stmt, conn)
-        return self._finalize(df)
+            return self._read(stmt, conn)
 
     # --------------------------------------------------------------- observations
     def series(
@@ -159,7 +149,7 @@ class Client:
         *,
         provider: Provider | str | None = None,
         wide: bool = False,
-    ) -> Any:
+    ) -> pd.DataFrame:
         """Return scalar observations for one or more series codes.
 
         With ``wide=True`` the result is indexed by observation date and has one
@@ -198,8 +188,8 @@ class Client:
                 index="obs_date", columns="code", values="value", aggfunc="last"
             ).sort_index()
             wide_df.columns.name = None
-            return self._finalize(wide_df)
-        return self._finalize(df)
+            return wide_df
+        return df
 
     # ------------------------------------------------------------------ prices
     def daily_bars(
@@ -207,7 +197,7 @@ class Client:
         symbols: str | Sequence[str],
         start: str | date | datetime | None = None,
         end: str | date | datetime | None = None,
-    ) -> Any:
+    ) -> pd.DataFrame:
         wanted = _as_list(symbols)
         if not wanted:
             raise ValueError("at least one symbol is required")
@@ -233,7 +223,7 @@ class Client:
             df = self._read(stmt, conn)
         if not df.empty:
             df["trade_date"] = pd.to_datetime(df["trade_date"])
-        return self._finalize(df)
+        return df
 
     def bars(
         self,
@@ -243,7 +233,7 @@ class Client:
         start: str | date | datetime,
         end: str | date | datetime,
         max_rows: int = 2_000_000,
-    ) -> Any:
+    ) -> pd.DataFrame:
         """Return intraday bars.
 
         A start and end are required to prevent accidentally loading millions of
@@ -282,7 +272,7 @@ class Client:
             raise ValueError(f"query returned more than max_rows={max_rows}; narrow the date range")
         if not df.empty:
             df["ts"] = pd.to_datetime(df["ts"], utc=True)
-        return self._finalize(df)
+        return df
 
     def iter_bars(
         self,
@@ -292,7 +282,7 @@ class Client:
         start: str | date | datetime,
         end: str | date | datetime,
         batch_size: int = 100_000,
-    ) -> Iterator[Any]:
+    ) -> Iterator[pd.DataFrame]:
         """Stream intraday bars in batches."""
         interval = Timeframe(timeframe)
         wanted = _as_list(symbols)
@@ -327,7 +317,71 @@ class Client:
                 df = pd.DataFrame(partition, columns=list(result.keys()))
                 if not df.empty:
                     df["ts"] = pd.to_datetime(df["ts"], utc=True)
-                yield self._finalize(df)
+                yield df
+
+    def _put_call_summary(
+        self,
+        wanted: list[str],
+        start: str | date | datetime | None,
+        end: str | date | datetime | None,
+    ) -> pd.DataFrame:
+        stmt = (
+            select(
+                Instrument.symbol,
+                PutCallSummary.trade_date,
+                PutCallSummary.full_chain_ratio,
+            )
+            .join(
+                PutCallSummary,
+                PutCallSummary.instrument_id == Instrument.id,
+            )
+            .where(Instrument.symbol.in_(wanted))
+            .order_by(PutCallSummary.trade_date, Instrument.symbol)
+        )
+        if start is not None:
+            stmt = stmt.where(PutCallSummary.trade_date >= _as_date(start))
+        if end is not None:
+            stmt = stmt.where(PutCallSummary.trade_date <= _as_date(end))
+        with self.engine.connect() as conn:
+            df = self._read(stmt, conn)
+        if not df.empty:
+            df["trade_date"] = pd.to_datetime(df["trade_date"])
+        return df
+
+    def _put_call_expiration(
+        self,
+        wanted: list[str],
+        start: str | date | datetime | None,
+        end: str | date | datetime | None,
+    ) -> pd.DataFrame:
+        stmt = (
+            select(
+                Instrument.symbol,
+                PutCallExpiration.trade_date,
+                PutCallExpiration.expiration_date,
+                PutCallExpiration.ratio,
+            )
+            .join(
+                PutCallExpiration,
+                PutCallExpiration.instrument_id == Instrument.id,
+            )
+            .where(Instrument.symbol.in_(wanted))
+            .order_by(
+                PutCallExpiration.trade_date,
+                PutCallExpiration.expiration_date,
+                Instrument.symbol,
+            )
+        )
+        if start is not None:
+            stmt = stmt.where(PutCallExpiration.trade_date >= _as_date(start))
+        if end is not None:
+            stmt = stmt.where(PutCallExpiration.trade_date <= _as_date(end))
+        with self.engine.connect() as conn:
+            df = self._read(stmt, conn)
+        if not df.empty:
+            df["trade_date"] = pd.to_datetime(df["trade_date"])
+            df["expiration_date"] = pd.to_datetime(df["expiration_date"])
+        return df
 
     def put_call(
         self,
@@ -336,60 +390,15 @@ class Client:
         end: str | date | datetime | None = None,
         *,
         level: PutCallLevel | str = PutCallLevel.SUMMARY,
-    ) -> Any:
+    ) -> pd.DataFrame:
+        """Return put/call ratios at summary or per-expiration granularity."""
         granularity = PutCallLevel(level)
         wanted = _as_list(symbols)
         if not wanted:
             raise ValueError("at least one symbol is required")
-        stmt: Any
         if granularity is PutCallLevel.SUMMARY:
-            stmt = (
-                select(
-                    Instrument.symbol,
-                    PutCallSummary.trade_date,
-                    PutCallSummary.full_chain_ratio,
-                )
-                .join(
-                    PutCallSummary,
-                    PutCallSummary.instrument_id == Instrument.id,
-                )
-                .where(Instrument.symbol.in_(wanted))
-                .order_by(PutCallSummary.trade_date, Instrument.symbol)
-            )
-            if start is not None:
-                stmt = stmt.where(PutCallSummary.trade_date >= _as_date(start))
-            if end is not None:
-                stmt = stmt.where(PutCallSummary.trade_date <= _as_date(end))
-        else:
-            stmt = (
-                select(
-                    Instrument.symbol,
-                    PutCallExpiration.trade_date,
-                    PutCallExpiration.expiration_date,
-                    PutCallExpiration.ratio,
-                )
-                .join(
-                    PutCallExpiration,
-                    PutCallExpiration.instrument_id == Instrument.id,
-                )
-                .where(Instrument.symbol.in_(wanted))
-                .order_by(
-                    PutCallExpiration.trade_date,
-                    PutCallExpiration.expiration_date,
-                    Instrument.symbol,
-                )
-            )
-            if start is not None:
-                stmt = stmt.where(PutCallExpiration.trade_date >= _as_date(start))
-            if end is not None:
-                stmt = stmt.where(PutCallExpiration.trade_date <= _as_date(end))
-        with self.engine.connect() as conn:
-            df = self._read(stmt, conn)
-        if not df.empty:
-            df["trade_date"] = pd.to_datetime(df["trade_date"])
-            if "expiration_date" in df:
-                df["expiration_date"] = pd.to_datetime(df["expiration_date"])
-        return self._finalize(df)
+            return self._put_call_summary(wanted, start, end)
+        return self._put_call_expiration(wanted, start, end)
 
     # -------------------------------------------------------------------- news
     def news(
@@ -401,11 +410,11 @@ class Client:
         end: str | date | datetime | None = None,
         min_relevance: float = 0.0,
         limit: int = 10_000,
-    ) -> Any:
+    ) -> pd.DataFrame:
         topic_list = _as_list(topics)
         ticker_list = _as_list(tickers)
         conditions = []
-        params: dict[str, Any] = {"limit": limit}
+        params: dict[str, SqlParam] = {"limit": limit}
         if start is not None:
             conditions.append("a.published_at >= :start")
             params["start"] = _as_datetime(start)
@@ -454,7 +463,7 @@ class Client:
             df = pd.read_sql(query, conn, params=params)
         if not df.empty:
             df["published_at"] = pd.to_datetime(df["published_at"], utc=True)
-        return self._finalize(df)
+        return df
 
     def news_sentiment(
         self,
@@ -464,13 +473,13 @@ class Client:
         end: str | date | datetime | None = None,
         frequency: NewsFrequency | str = NewsFrequency.DAILY,
         min_relevance: float = 0.0,
-    ) -> Any:
+    ) -> pd.DataFrame:
         wanted = _as_list(tickers)
         if not wanted:
             raise ValueError("at least one ticker is required")
         freq = NewsFrequency(frequency)
         conditions = ["ts.ticker = ANY(:tickers)"]
-        params: dict[str, Any] = {
+        params: dict[str, SqlParam] = {
             "tickers": wanted,
             "unit": freq.sql_unit,
             "min_relevance": min_relevance,
@@ -500,7 +509,7 @@ class Client:
             df = pd.read_sql(query, conn, params=params)
         if not df.empty:
             df["bucket"] = pd.to_datetime(df["bucket"])
-        return self._finalize(df)
+        return df
 
     # ------------------------------------------------------------------- panels
     def panel(
@@ -512,7 +521,7 @@ class Client:
         macro: Sequence[str] | None = None,
         news_tickers: Sequence[str] | None = None,
         frequency: NewsFrequency | str = NewsFrequency.DAILY,
-    ) -> Any:
+    ) -> pd.DataFrame:
         """Build a daily feature panel from daily bars, macro series and news.
 
         Macro observations are joined with a backward ``merge_asof``, so a row
@@ -525,8 +534,6 @@ class Client:
             raise ValueError("panel currently supports frequency='1D' only")
         symbols_list = _as_list(symbols) or []
         bars_df = self.daily_bars(symbols_list, start, end)
-        if self.format is OutputFormat.POLARS:
-            bars_df = bars_df.to_pandas()
         if bars_df.empty:
             raise ValueError("no daily bars found for the requested symbols")
 
@@ -542,8 +549,6 @@ class Client:
 
         if macro:
             macro_df = self.series(macro, start, end, wide=True)
-            if self.format is OutputFormat.POLARS:
-                macro_df = macro_df.to_pandas()
             macro_df = macro_df.reset_index().rename(columns={"obs_date": "date"})
             macro_df = macro_df.sort_values("date")
             base = pd.merge_asof(
@@ -556,8 +561,6 @@ class Client:
 
         if news_tickers:
             sentiment = self.news_sentiment(news_tickers, start=start, end=end, frequency=freq)
-            if self.format is OutputFormat.POLARS:
-                sentiment = sentiment.to_pandas()
             if not sentiment.empty:
                 sentiment = sentiment.rename(columns={"bucket": "date"})
                 sentiment["date"] = pd.to_datetime(sentiment["date"])
@@ -566,4 +569,4 @@ class Client:
                 counts = sentiment.pivot(index="date", columns="ticker", values="article_count")
                 counts.columns = [f"news_{ticker}_count" for ticker in counts.columns]
                 base = base.merge(pivot.join(counts).reset_index(), on="date", how="left")
-        return self._finalize(base)
+        return base

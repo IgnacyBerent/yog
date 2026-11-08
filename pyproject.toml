@@ -1,6 +1,6 @@
 [project]
 name = "yog"
-version = "0.1.0"
+version = "0.2.0"
 description = "PostgreSQL loader and ML data client for the yog market dataset"
 readme = "README.md"
 authors = [{ name = "IgnacyBerent", email = "2gb02ignac@gmail.com" }]
@@ -9,7 +9,6 @@ dependencies = [
     "alembic>=1.20.1",
     "orjson>=3.13.0",
     "pandas>=3.1.1",
-    "polars>=2.1.0",
     "psycopg[binary]>=3.3.8",
     "pyarrow>=26.0.1",
     "pydantic>=2.14.3",
@@ -42,6 +41,7 @@ addopts = "-q"
 python_version = "3.14"
 files = ["src/yog"]
 strict = true
+disallow_any_explicit = true
 warn_unreachable = true
 warn_unused_ignores = true
 show_error_codes = true
