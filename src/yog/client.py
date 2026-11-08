@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Self
 
 import pandas as pd
 from sqlalchemy import Engine, create_engine, select, text
 
+from yog.aggregation import bucket_minutes, early_close_dates
 from yog.config import get_settings
 from yog.db.models import (
     Bar,
@@ -17,6 +18,7 @@ from yog.db.models import (
     Series,
 )
 from yog.enums import (
+    BarInterval,
     NewsFrequency,
     Provider,
     PutCallLevel,
@@ -30,6 +32,9 @@ if TYPE_CHECKING:
     from sqlalchemy.sql import Selectable
 
     SqlParam = str | bytes | date | datetime | float | int | Sequence[str] | None
+    SqlParamValue = (
+        str | bytes | date | datetime | float | int | Sequence[str] | Sequence[date] | None
+    )
 
 
 def _as_list(value: str | Sequence[str] | None) -> list[str] | None:
@@ -223,7 +228,12 @@ class Client:
             df = self._read(stmt, conn)
         if not df.empty:
             df["trade_date"] = pd.to_datetime(df["trade_date"])
-        return df
+        present = set(df["symbol"].unique()) if not df.empty else set()
+        missing = [symbol for symbol in wanted if symbol not in present]
+        if missing:
+            derived = self._derived_daily_bars(missing, start, end)
+            df = pd.concat([df, derived], ignore_index=True)
+        return df.sort_values(["trade_date", "symbol"]).reset_index(drop=True)
 
     def bars(
         self,
@@ -272,6 +282,175 @@ class Client:
             raise ValueError(f"query returned more than max_rows={max_rows}; narrow the date range")
         if not df.empty:
             df["ts"] = pd.to_datetime(df["ts"], utc=True)
+        return df
+
+    def aggregated_bars(
+        self,
+        symbols: str | Sequence[str],
+        *,
+        interval: BarInterval | str,
+        start: str | date | datetime,
+        end: str | date | datetime,
+    ) -> pd.DataFrame:
+        """Return bars aggregated to a derived interval."""
+        resolved = BarInterval(interval)
+        wanted = _as_list(symbols)
+        if not wanted:
+            raise ValueError("at least one symbol is required")
+        if resolved is BarInterval.M5:
+            return self.bars(
+                wanted,
+                timeframe=Timeframe.M5,
+                start=start,
+                end=end,
+            )
+        if resolved is BarInterval.D1:
+            daily = self.daily_bars(wanted, start, end)
+            daily["timeframe"] = resolved.value
+            daily["ts"] = pd.to_datetime(daily["trade_date"], utc=True)
+            return daily[
+                [
+                    "symbol",
+                    "timeframe",
+                    "ts",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+            ]
+        start_ts = _as_datetime(start)
+        end_ts = _as_datetime(end, end_of_day=True)
+        if start_ts is None or end_ts is None:
+            raise ValueError("start and end are required")
+        early = early_close_dates(
+            start_ts.date() - timedelta(days=1),
+            end_ts.date() + timedelta(days=1),
+        )
+        params: dict[str, SqlParamValue] = {
+            "symbols": wanted,
+            "timeframe": Timeframe.M5.value,
+            "interval": resolved.value,
+            "bucket_minutes": bucket_minutes(resolved),
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+        }
+        early_clause = "FALSE"
+        if early:
+            early_clause = "local_ts::date = ANY(:early_close_dates)"
+            params["early_close_dates"] = list(early)
+        sql = f"""
+        WITH filtered AS (
+            SELECT i.symbol,
+                   (b.ts AT TIME ZONE 'America/New_York') AS local_ts,
+                   b.open, b.high, b.low, b.close, b.volume
+            FROM bars b
+            JOIN instruments i ON i.id = b.instrument_id
+            WHERE i.symbol = ANY(:symbols)
+              AND b.timeframe = :timeframe
+              AND b.ts >= :start_ts
+              AND b.ts <= :end_ts
+        ),
+        session_bars AS (
+            SELECT *,
+                   local_ts::date AS trade_date,
+                   FLOOR(
+                       EXTRACT(EPOCH FROM (local_ts::time - TIME '09:30'))
+                       / (:bucket_minutes * 60.0)
+                   )::int AS bucket_index
+            FROM filtered
+            WHERE local_ts::time >= TIME '09:30'
+              AND local_ts::time < CASE
+                  WHEN {early_clause} THEN TIME '13:00'
+                  ELSE TIME '16:00'
+              END
+        ),
+        bucketed AS (
+            SELECT *,
+                   trade_date + TIME '09:30'
+                   + (bucket_index * :bucket_minutes) * INTERVAL '1 minute'
+                   AS bucket_start
+            FROM session_bars
+        )
+        SELECT symbol,
+               :interval AS timeframe,
+               bucket_start AT TIME ZONE 'America/New_York' AS ts,
+               (ARRAY_AGG(open ORDER BY local_ts))[1] AS open,
+               MAX(high) AS high,
+               MIN(low) AS low,
+               (ARRAY_AGG(close ORDER BY local_ts DESC))[1] AS close,
+               SUM(volume) AS volume
+        FROM bucketed
+        GROUP BY symbol, bucket_start
+        ORDER BY ts, symbol
+        """
+        with self.engine.connect() as conn:
+            df = pd.read_sql(text(sql), conn, params=params)
+        if not df.empty:
+            df["ts"] = pd.to_datetime(df["ts"], utc=True)
+        return df
+
+    def _derived_daily_bars(
+        self,
+        symbols: Sequence[str],
+        start: str | date | datetime | None,
+        end: str | date | datetime | None,
+    ) -> pd.DataFrame:
+        params: dict[str, SqlParamValue] = {
+            "symbols": list(symbols),
+            "timeframe": Timeframe.M5.value,
+        }
+        start_clause = ""
+        end_clause = ""
+        if start is not None:
+            start_clause = "AND b.ts >= :start_ts"
+            params["start_ts"] = _as_datetime(start)
+        if end is not None:
+            end_clause = "AND b.ts <= :end_ts"
+            params["end_ts"] = _as_datetime(end, end_of_day=True)
+        early = early_close_dates(date(2006, 1, 1), date(2100, 1, 1))
+        early_clause = "FALSE"
+        if early:
+            early_clause = "local_ts::date = ANY(:early_close_dates)"
+            params["early_close_dates"] = list(early)
+        sql = f"""
+        WITH filtered AS (
+            SELECT i.symbol,
+                   (b.ts AT TIME ZONE 'America/New_York') AS local_ts,
+                   b.open, b.high, b.low, b.close, b.volume
+            FROM bars b
+            JOIN instruments i ON i.id = b.instrument_id
+            WHERE i.symbol = ANY(:symbols)
+              AND b.timeframe = :timeframe
+              {start_clause}
+              {end_clause}
+        ),
+        session_bars AS (
+            SELECT *,
+                   local_ts::date AS trade_date
+            FROM filtered
+            WHERE local_ts::time >= TIME '09:30'
+              AND local_ts::time < CASE
+                  WHEN {early_clause} THEN TIME '13:00'
+                  ELSE TIME '16:00'
+              END
+        )
+        SELECT symbol,
+               trade_date,
+               (ARRAY_AGG(open ORDER BY local_ts))[1] AS open,
+               MAX(high) AS high,
+               MIN(low) AS low,
+               (ARRAY_AGG(close ORDER BY local_ts DESC))[1] AS close,
+               SUM(volume) AS volume
+        FROM session_bars
+        GROUP BY symbol, trade_date
+        ORDER BY trade_date, symbol
+        """
+        with self.engine.connect() as conn:
+            df = pd.read_sql(text(sql), conn, params=params)
+        if not df.empty:
+            df["trade_date"] = pd.to_datetime(df["trade_date"])
         return df
 
     def iter_bars(

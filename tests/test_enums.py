@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from yog.catalog import INSTRUMENTS, SERIES
 from yog.enums import (
+    BarInterval,
     FileKind,
     Frequency,
     IngestStatus,
@@ -32,6 +33,15 @@ def test_catalogue_uses_enum_types() -> None:
 
 def test_timeframe_values_match_schema_constraint() -> None:
     assert {timeframe.value for timeframe in Timeframe} == {"1m", "5m"}
+
+
+def test_bar_interval_values_are_stable() -> None:
+    assert {interval.value for interval in BarInterval} == {
+        "5m",
+        "1h",
+        "4h",
+        "1d",
+    }
 
 
 def test_ingest_status_values_match_schema_constraint() -> None:

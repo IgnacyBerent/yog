@@ -113,6 +113,15 @@ class Timeframe(StrEnum):
     M5 = "5m"
 
 
+class BarInterval(StrEnum):
+    """Bar interval available from the client, derived if necessary."""
+
+    M5 = "5m"
+    H1 = "1h"
+    H4 = "4h"
+    D1 = "1d"
+
+
 class PutCallLevel(StrEnum):
     """Granularity of put/call data returned by the client."""
 

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from yog.client import Client
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def main() -> None:

@@ -113,7 +113,7 @@ uv run yog validate
 ```python
 import yog
 
-with yog.Client() as client:              # reads DATABASE_URL from the environment
+with yog.Client() as client:  # reads DATABASE_URL from the environment
     catalog = client.catalog()
     instruments = client.instruments()
 
@@ -123,8 +123,19 @@ with yog.Client() as client:              # reads DATABASE_URL from the environm
     # Wide format: one column per series code, indexed by observation date
     macro_wide = client.series(["CPI", "UNEMPLOYMENT"], wide=True)
 
-    # Daily bars
+    # Daily bars. Symbols without stored daily rows are derived from 5m bars.
     spy = client.daily_bars("SPY", start="2024-01-01", end="2024-12-31")
+    etfs = client.daily_bars(
+        ["SPY", "XLE", "XLF"], start="2024-01-01", end="2024-12-31"
+    )
+
+    # Derived 1h/4h/1d bars, regular US session only
+    hourly = client.aggregated_bars(
+        ["SPY", "XLE"],
+        interval="1h",
+        start="2024-01-01",
+        end="2024-12-31",
+    )
 
     # Intraday bars: start and end are required
     intraday = client.bars(
@@ -135,9 +146,7 @@ with yog.Client() as client:              # reads DATABASE_URL from the environm
     )
 
     # Stream a large range in batches
-    for chunk in client.iter_bars(
-        "SPY", start="2024-01-01", end="2024-12-31", batch_size=100_000
-    ):
+    for chunk in client.iter_bars("SPY", start="2024-01-01", end="2024-12-31", batch_size=100_000):
         ...
 
     # Put/call data, either daily summary or per-expiration detail
@@ -175,6 +184,10 @@ client = yog.Client("postgresql+psycopg://yog:yog@localhost:5432/yog")
 - `daily_bars` — `(instrument_id, trade_date) → OHLCV`.
 - `bars` — `(instrument_id, timeframe, ts) → OHLCV`; `ts` is UTC and
   `timeframe` is constrained to `1m`/`5m`. Only `5m` is populated.
+- Derived `1h`, `4h` and `1d` bars are computed by the client from stored `5m`
+  bars. They are not persisted in the database. Intraday derivations use the
+  regular US session, include early-close handling, and aggregate OHLCV as
+  first/max/min/last/sum.
 - `put_call_summaries` — daily full-chain put/call ratio per instrument.
 - `put_call_expirations` — ratio per `(trade_date, expiration_date)`.
 - `news_articles` — one row per canonical URL (unique `url_hash`), with UTC
@@ -186,6 +199,11 @@ client = yog.Client("postgresql+psycopg://yog:yog@localhost:5432/yog")
 Timestamps are stored as `timestamptz` in UTC. Alpha Vantage intraday bars are
 interpreted as `America/New_York` and converted; news timestamps use the same
 US Eastern assumption.
+
+The stored 5-minute series may be split/dividend adjusted depending on the
+source file. Derived bars inherit that adjustment. Compare derived SPY daily
+bars with the official `daily_bars` rows before mixing them in level-based
+features.
 
 ## Development
 
